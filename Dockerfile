@@ -20,5 +20,5 @@ RUN npx prisma generate
 # Expose port
 EXPOSE 3000
 
-# Start command (using db push since migrations folder is missing)
-CMD ["sh", "-c", "npx prisma db push && npm start"]
+# Start command (running server directly, database should be synced manually or via CI)
+CMD ["npm", "start"]
