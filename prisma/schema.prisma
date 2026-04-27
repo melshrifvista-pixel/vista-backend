@@ -70,6 +70,8 @@ model Transaction {
   type             TransactionType
   entityId         Int
   notes            String?
+  personName       String?
+  isCashReturn     Boolean         @default(true)
   receiptImagePath String?
   timestamp        DateTime        @default(now())
   createdAt        DateTime        @default(now())

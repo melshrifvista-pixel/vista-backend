@@ -50,12 +50,15 @@ router.post('/', async (req, res, next) => {
         type, // 'IN' or 'OUT'
         entityId: parseInt(entityId),
         notes,
+        personName,
+        isCashReturn: isCashReturn !== undefined ? isCashReturn : true,
         receiptImagePath,
         timestamp: timestamp ? new Date(timestamp) : new Date()
       }
     });
 
     res.status(201).json(transaction);
+    req.io.emit('sync_data', { type: 'transactions', entityId });
   } catch (err) {
     next(err);
   }
@@ -69,6 +72,7 @@ router.delete('/:id', async (req, res, next) => {
       where: { id: parseInt(id) }
     });
     res.json({ message: 'Transaction deleted successfully' });
+    req.io.emit('sync_data', { type: 'transactions' });
   } catch (err) {
     next(err);
   }
@@ -84,12 +88,14 @@ router.get('/summary', async (req, res, next) => {
 
     let revenuesIn = 0, revenuesOut = 0;
     let expensesIn = 0, expensesOut = 0;
+    let netCustodyDebtTotal = 0;
 
     const custodyBalances = [];
 
     for (const entity of entities) {
       const inTotal = entity.transactions.filter(t => t.type === 'IN').reduce((acc, t) => acc + t.amount, 0);
       const outTotal = entity.transactions.filter(t => t.type === 'OUT').reduce((acc, t) => acc + t.amount, 0);
+      const outReturnTotal = entity.transactions.filter(t => t.type === 'OUT' && t.isCashReturn).reduce((acc, t) => acc + t.amount, 0);
 
       if (entity.type === 'REVENUE') {
         revenuesIn += inTotal;
@@ -103,13 +109,16 @@ router.get('/summary', async (req, res, next) => {
           name: entity.name,
           balance: entity.initialBalance + inTotal - outTotal
         });
+        // For net balance, custody is a liability (IN - OUT_Return)
+        netCustodyDebtTotal += (inTotal - outReturnTotal);
       }
     }
 
-    const netBalance = (revenuesIn - revenuesOut) - (expensesOut - expensesIn);
+    const netBusinessBalance = (revenuesIn - revenuesOut) - (expensesOut - expensesIn);
+    const totalNetBalance = netBusinessBalance - netCustodyDebtTotal;
 
     res.json({
-      netBalance,
+      netBalance: totalNetBalance,
       custodyBalances
     });
   } catch (err) {

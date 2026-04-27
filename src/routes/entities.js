@@ -56,6 +56,7 @@ router.post('/', async (req, res, next) => {
     });
 
     res.status(201).json(result);
+    req.io.emit('sync_data', { type: 'entities' });
   } catch (err) {
     console.error("[CREATE ENTITY ERROR]", err);
     next(err);
@@ -74,6 +75,7 @@ router.put('/:id', authMiddleware(['ADMIN', 'ACCOUNTANT']), async (req, res, nex
     });
 
     res.json(entity);
+    req.io.emit('sync_data', { type: 'entities', id });
   } catch (err) {
     next(err);
   }
@@ -87,6 +89,7 @@ router.delete('/:id', authMiddleware(['ADMIN']), async (req, res, next) => {
       where: { id: parseInt(id) }
     });
     res.json({ message: 'Entity deleted successfully' });
+    req.io.emit('sync_data', { type: 'entities' });
   } catch (err) {
     next(err);
   }
