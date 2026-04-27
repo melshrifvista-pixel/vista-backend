@@ -38,7 +38,7 @@ router.get('/entity/:entityId', async (req, res, next) => {
 // Create a transaction
 router.post('/', async (req, res, next) => {
   try {
-    const { amount, type, entityId, notes, receiptImagePath, timestamp } = req.body;
+    const { amount, type, entityId, notes, personName, isCashReturn, receiptImagePath, timestamp } = req.body;
 
     if (amount === undefined || !type || !entityId) {
       return res.status(400).json({ error: 'Amount, type, and entityId are required' });
