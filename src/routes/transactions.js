@@ -38,22 +38,34 @@ router.get('/entity/:entityId', async (req, res, next) => {
 // Create a transaction
 router.post('/', async (req, res, next) => {
   try {
-    const { amount, type, entityId, notes, personName, isCashReturn, receiptImagePath, timestamp } = req.body;
+    const { amount, type, entityId, notes, personName, isCashReturn, receiptImagePath, timestamp, clientGuid } = req.body;
 
     if (amount === undefined || !type || !entityId) {
       return res.status(400).json({ error: 'Amount, type, and entityId are required' });
     }
 
-    const transaction = await prisma.transaction.create({
-      data: {
+    const transaction = await prisma.transaction.upsert({
+      where: { clientGuid: clientGuid || 'no-guid-' + Date.now() },
+      update: {
         amount: parseFloat(amount),
-        type, // 'IN' or 'OUT'
+        type,
         entityId: parseInt(entityId),
         notes,
         personName,
         isCashReturn: isCashReturn !== undefined ? isCashReturn : true,
         receiptImagePath,
         timestamp: timestamp ? new Date(timestamp) : new Date()
+      },
+      create: {
+        amount: parseFloat(amount),
+        type,
+        entityId: parseInt(entityId),
+        notes,
+        personName,
+        isCashReturn: isCashReturn !== undefined ? isCashReturn : true,
+        receiptImagePath,
+        timestamp: timestamp ? new Date(timestamp) : new Date(),
+        clientGuid
       }
     });
 

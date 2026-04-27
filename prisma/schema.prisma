@@ -74,6 +74,7 @@ model Transaction {
   isCashReturn     Boolean         @default(true)
   receiptImagePath String?
   timestamp        DateTime        @default(now())
+  clientGuid       String?         @unique
   createdAt        DateTime        @default(now())
   updatedAt        DateTime        @updatedAt
 
