@@ -4,6 +4,18 @@ const prisma = new PrismaClient();
 
 const router = express.Router();
 
+// Get all contracts (global)
+router.get('/all', async (req, res) => {
+  try {
+    const contracts = await prisma.contract.findMany({
+      orderBy: { startDate: 'desc' }
+    });
+    res.json(contracts);
+  } catch (error) {
+    res.status(500).json({ error: "Failed to fetch all contracts" });
+  }
+});
+
 // Get all contracts for a specific financial entity
 router.get('/:entityId', async (req, res) => {
   try {
