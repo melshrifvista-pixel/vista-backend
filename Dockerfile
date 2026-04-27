@@ -14,8 +14,8 @@ RUN npm install
 # Copy the rest of the application
 COPY . .
 
-# Generate Prisma Client
-RUN npx prisma generate
+# Fix permissions and Generate Prisma Client
+RUN chmod -R +x node_modules/.bin && node node_modules/.bin/prisma generate
 
 # Expose port
 EXPOSE 3000
