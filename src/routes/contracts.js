@@ -57,7 +57,7 @@ router.get('/:entityId/active', async (req, res) => {
 // Create a new contract
 router.post('/', async (req, res) => {
   try {
-    const { financialEntityId, tenantName, startDate, endDate, monthlyRent } = req.body;
+    const { financialEntityId, tenantName, startDate, endDate, monthlyRent, clientGuid } = req.body;
     const parsedId = parseInt(financialEntityId);
     console.log(`[CREATE CONTRACT] EntityId: ${financialEntityId} (${parsedId}), Tenant: ${tenantName}`);
     
@@ -79,39 +79,39 @@ router.post('/', async (req, res) => {
       return res.status(400).json({ error: "End date must be after start date" });
     }
 
-    // Check for overlaps ONLY with ACTIVE contracts
-    // We use exclusive check: newStart < existingEnd AND newEnd > existingStart
-    const overlaps = await prisma.contract.findFirst({
-      where: {
-        financialEntityId: parsedId,
-        isActive: true,
-        AND: [
-          { startDate: { lt: end } },
-          { endDate: { gt: start } }
-        ]
-      }
-    });
-
-    if (overlaps) {
-      console.log(`[CREATE CONTRACT] Overlap detected with contract ${overlaps.id}`);
-      return res.status(400).json({ error: "تداخل في التواريخ: يوجد عقد آخر نشط في هذه الفترة لهذا المركز." });
-    }
-
-    // Deactivate current active, create new
+    // Deactivate current active, create/upsert new
     const result = await prisma.$transaction(async (tx) => {
-      await tx.contract.updateMany({
-        where: { financialEntityId: parsedId, isActive: true },
-        data: { isActive: false }
-      });
+      // If we're creating a NEW contract (no existing Guid), we deactivate old ones.
+      // If it's an update of an existing Guid, we don't necessarily want to toggle everything unless it's a real new contract.
+      // But for simplicity, we keep the deactivation logic for the first time it hits the server.
+      
+      const existing = clientGuid ? await tx.contract.findUnique({ where: { clientGuid } }) : null;
+      
+      if (!existing) {
+        await tx.contract.updateMany({
+          where: { financialEntityId: parsedId, isActive: true },
+          data: { isActive: false }
+        });
+      }
 
-      return await tx.contract.create({
-        data: { 
-          financialEntityId: parsedId, 
-          tenantName, 
-          startDate: start, 
-          endDate: end, 
-          monthlyRent: parseFloat(monthlyRent) || 0, 
-          isActive: true 
+      return await tx.contract.upsert({
+        where: { clientGuid: clientGuid || 'no-guid-con-' + Date.now() },
+        update: {
+          financialEntityId: parsedId,
+          tenantName,
+          startDate: start,
+          endDate: end,
+          monthlyRent: parseFloat(monthlyRent) || 0,
+          isActive: true
+        },
+        create: {
+          financialEntityId: parsedId,
+          tenantName,
+          startDate: start,
+          endDate: end,
+          monthlyRent: parseFloat(monthlyRent) || 0,
+          isActive: true,
+          clientGuid
         }
       });
     });

@@ -23,7 +23,7 @@ router.get('/', async (req, res, next) => {
 // Create a new entity
 router.post('/', async (req, res, next) => {
   try {
-    const { name, type, initialBalance, contract } = req.body;
+    const { name, type, initialBalance, contract, clientGuid } = req.body;
     
     if (!name || !type) {
       return res.status(400).json({ error: 'Name and type are required' });
@@ -31,11 +31,18 @@ router.post('/', async (req, res, next) => {
 
     // Use transaction if contract is provided
     const result = await prisma.$transaction(async (tx) => {
-      const entity = await tx.financialEntity.create({
-        data: {
+      const entity = await tx.financialEntity.upsert({
+        where: { clientGuid: clientGuid || 'no-guid-ent-' + Date.now() },
+        update: {
           name,
-          type, // 'REVENUE', 'EXPENSE', 'CUSTODY'
+          type,
           initialBalance: parseFloat(initialBalance) || 0.0
+        },
+        create: {
+          name,
+          type,
+          initialBalance: parseFloat(initialBalance) || 0.0,
+          clientGuid
         }
       });
 

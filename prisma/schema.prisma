@@ -39,6 +39,7 @@ model FinancialEntity {
   name           String
   type           EntityType
   initialBalance Float        @default(0.0)
+  clientGuid     String?      @unique
   createdAt      DateTime     @default(now())
   updatedAt      DateTime     @updatedAt
   transactions   Transaction[]
@@ -53,6 +54,7 @@ model Contract {
   endDate          DateTime
   monthlyRent      Float
   isActive         Boolean         @default(true)
+  clientGuid       String?         @unique
   createdAt        DateTime        @default(now())
   updatedAt        DateTime        @updatedAt
 
