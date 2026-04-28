@@ -25,6 +25,10 @@ const io = new Server(httpServer, {
 
 const PORT = process.env.PORT || 3000;
 
+// Ensure critical secrets have defaults for ease of deployment
+process.env.JWT_SECRET = process.env.JWT_SECRET || 'supersecretkey_vista_2026';
+process.env.REFRESH_SECRET = process.env.REFRESH_SECRET || 'superrefreshkey_vista_2026';
+
 app.use(cors());
 app.use(express.json());
 app.use(apiLimiter); // Apply global rate limiting
