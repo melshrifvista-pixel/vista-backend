@@ -386,5 +386,148 @@ router.post('/social-login', authLimiter, async (req, res, next) => {
   }
 });
 
+// ─── Forgot Password ──────────────────────────────────────────────────────────
+// Step 1: User submits their email → send OTP
+router.post('/forgot-password', authLimiter, async (req, res, next) => {
+  try {
+    const { email } = req.body;
+
+    if (!email) {
+      return res.status(400).json({ error: 'Email is required' });
+    }
+
+    const user = await prisma.user.findUnique({ where: { email } });
+
+    // Always return success to avoid email enumeration attacks
+    if (!user) {
+      return res.json({ message: 'If this email is registered, a reset code has been sent.' });
+    }
+
+    // Delete any existing OTPs for this user
+    await prisma.oTP.deleteMany({ where: { userId: user.id } });
+
+    // Generate a fresh OTP
+    const otp = generateOTP();
+    const hashedOtp = await hashOTP(otp);
+
+    await prisma.oTP.create({
+      data: {
+        userId: user.id,
+        otpHash: hashedOtp,
+        expiresAt: new Date(Date.now() + 10 * 60 * 1000), // 10 minutes
+      }
+    });
+
+    await sendEmail({
+      to: email,
+      subject: 'VISTA - Password Reset Code',
+      text: `Your password reset code is: ${otp}. It expires in 10 minutes.`,
+      html: `
+        <div style="font-family: Arial, sans-serif; max-width: 500px; margin: auto; padding: 24px; border: 1px solid #e0e0e0; border-radius: 8px;">
+          <h2 style="color: #1a73e8;">VISTA Financial System</h2>
+          <p>You requested a password reset. Use the code below:</p>
+          <div style="font-size: 32px; font-weight: bold; letter-spacing: 8px; color: #1a73e8; text-align: center; padding: 16px; background: #f0f4ff; border-radius: 8px; margin: 16px 0;">
+            ${otp}
+          </div>
+          <p style="color: #666;">This code expires in <strong>10 minutes</strong>.</p>
+          <p style="color: #999; font-size: 12px;">If you did not request this, please ignore this email.</p>
+        </div>
+      `
+    });
+
+    await logAudit(user.id, 'FORGOT_PASSWORD_REQUESTED', { email }, req);
+
+    res.json({ message: 'If this email is registered, a reset code has been sent.' });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ─── Reset Password ───────────────────────────────────────────────────────────
+// Step 2: User submits email + OTP + new password
+router.post('/reset-password', authLimiter, async (req, res, next) => {
+  try {
+    const { email, otp, newPassword } = req.body;
+
+    if (!email || !otp || !newPassword) {
+      return res.status(400).json({ error: 'Email, OTP, and new password are required' });
+    }
+
+    if (newPassword.length < 8) {
+      return res.status(400).json({ error: 'Password must be at least 8 characters' });
+    }
+
+    const user = await prisma.user.findUnique({ where: { email } });
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const otpRecord = await prisma.oTP.findFirst({
+      where: { userId: user.id },
+      orderBy: { createdAt: 'desc' }
+    });
+
+    if (!otpRecord || otpRecord.expiresAt < new Date()) {
+      return res.status(400).json({ error: 'Reset code expired or not found. Please request a new one.' });
+    }
+
+    if (otpRecord.attempts >= 5) {
+      return res.status(400).json({ error: 'Too many failed attempts. Please request a new code.' });
+    }
+
+    const isMatch = await verifyOTP(otp, otpRecord.otpHash);
+    if (!isMatch) {
+      await prisma.oTP.update({
+        where: { id: otpRecord.id },
+        data: { attempts: { increment: 1 } }
+      });
+      return res.status(400).json({ error: 'Invalid reset code' });
+    }
+
+    // OTP is valid → update password and clean up
+    const hashedPassword = await bcrypt.hash(newPassword, 12);
+
+    await prisma.user.update({
+      where: { id: user.id },
+      data: {
+        passwordHash: hashedPassword,
+        failedLoginAttempts: 0,
+        isLocked: false,
+        lockUntil: null
+      }
+    });
+
+    // Invalidate all sessions (force re-login everywhere)
+    await prisma.session.updateMany({
+      where: { userId: user.id },
+      data: { isValid: false }
+    });
+
+    // Delete the used OTP
+    await prisma.oTP.deleteMany({ where: { userId: user.id } });
+
+    await logAudit(user.id, 'PASSWORD_RESET_SUCCESS', { email }, req);
+
+    // Send confirmation email
+    await sendEmail({
+      to: email,
+      subject: 'VISTA - Password Changed Successfully',
+      text: 'Your password has been changed successfully. If you did not do this, please contact support immediately.',
+      html: `
+        <div style="font-family: Arial, sans-serif; max-width: 500px; margin: auto; padding: 24px; border: 1px solid #e0e0e0; border-radius: 8px;">
+          <h2 style="color: #1a73e8;">VISTA Financial System</h2>
+          <p>✅ Your password has been <strong>changed successfully</strong>.</p>
+          <p style="color: #d32f2f;">If you did not make this change, please contact support immediately.</p>
+        </div>
+      `
+    });
+
+    res.json({ message: 'Password reset successfully. You can now log in with your new password.' });
+  } catch (err) {
+    next(err);
+  }
+});
+
 module.exports = router;
+
 
