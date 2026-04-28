@@ -120,6 +120,45 @@ router.post('/verify-otp', authLimiter, async (req, res, next) => {
   }
 });
 
+// Resend Verification OTP
+router.post('/resend-verification', authLimiter, async (req, res, next) => {
+  try {
+    const { email } = req.body;
+    if (!email) return res.status(400).json({ error: 'Email is required' });
+
+    const user = await prisma.user.findUnique({ where: { email } });
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    if (user.isVerified) return res.status(400).json({ error: 'Account is already verified' });
+
+    // Delete existing OTPs
+    await prisma.oTP.deleteMany({ where: { userId: user.id } });
+
+    // Generate and send new OTP
+    const otp = generateOTP();
+    const hashedOtp = await hashOTP(otp);
+    await prisma.oTP.create({
+      data: {
+        userId: user.id,
+        otpHash: hashedOtp,
+        expiresAt: new Date(Date.now() + 5 * 60 * 1000) // 5 minutes
+      }
+    });
+
+    await sendEmail({
+      to: email,
+      subject: 'VISTA - Verify Your Account',
+      text: `Your verification code is: ${otp}. It expires in 5 minutes.`,
+      html: `<h1>Welcome to VISTA</h1><p>Your verification code is: <strong>${otp}</strong></p><p>It expires in 5 minutes.</p>`
+    });
+
+    await logAudit(user.id, 'VERIFICATION_RESENT', { email }, req);
+
+    res.json({ message: 'Verification code resent successfully.' });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // Login
 router.post('/login', authLimiter, async (req, res, next) => {
   try {
