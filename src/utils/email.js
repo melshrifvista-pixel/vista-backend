@@ -5,7 +5,8 @@ const sendEmail = async (options) => {
   let attempt = 0;
 
   const message = {
-    from: `${process.env.FROM_NAME || 'VISTA'} <${process.env.FROM_EMAIL || 'no-reply@vista.local'}>`,
+    from: `${process.env.FROM_NAME || 'VISTA Financial'} <${process.env.FROM_EMAIL || 'melshrif.vista@gmail.com'}>`,
+
     to: options.to,
     subject: options.subject,
     text: options.text,
@@ -23,14 +24,15 @@ const sendEmail = async (options) => {
   }
 
   const transporter = nodemailer.createTransport({
-    host: process.env.SMTP_HOST,
-    port: process.env.SMTP_PORT,
-    secure: process.env.SMTP_PORT == 465, // true for 465, false for other ports
+    host: process.env.SMTP_HOST || 'smtp.gmail.com',
+    port: process.env.SMTP_PORT || 465,
+    secure: (process.env.SMTP_PORT || 465) == 465,
     auth: {
-      user: process.env.SMTP_USER,
-      pass: process.env.SMTP_PASS,
+      user: process.env.SMTP_USER || 'melshrif.vista@gmail.com',
+      pass: process.env.SMTP_PASS || 'mxjz xjix znls yqev',
     },
   });
+
 
   while (attempt < maxRetries) {
     try {
