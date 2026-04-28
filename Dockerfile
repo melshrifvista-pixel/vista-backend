@@ -8,19 +8,20 @@ RUN apk add --no-cache openssl
 # Copy package.json and package-lock.json
 COPY package*.json ./
 
-# Copy prisma schema before npm install (so postinstall: prisma generate works)
+# Copy prisma schema early for potential dependency caching
 COPY prisma ./prisma/
 
-# Install dependencies
+# Install dependencies (without postinstall generate)
 RUN npm install
-
 
 # Copy the rest of the application
 COPY . .
 
+# Explicitly generate Prisma Client after all files are present
+RUN npx prisma generate --schema=prisma/schema.prisma
 
 # Expose port
 EXPOSE 3000
 
-# Start command (running server directly, database should be synced manually or via CI)
+# Start command
 CMD ["npm", "start"]

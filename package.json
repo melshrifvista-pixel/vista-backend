@@ -6,9 +6,9 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "nodemon src/index.js",
-    "migrate": "npx prisma migrate dev --name init",
-    "postinstall": "prisma generate"
+    "migrate": "npx prisma migrate dev --name init"
   },
+
   "dependencies": {
     "@prisma/client": "^5.12.1",
     "bcryptjs": "^2.4.3",
