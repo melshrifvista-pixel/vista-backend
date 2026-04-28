@@ -1,13 +1,20 @@
 const express = require('express');
 const { PrismaClient } = require('@prisma/client');
-const prisma = new PrismaClient();
+const authMiddleware = require('../middlewares/auth');
+const isolationMiddleware = require('../middlewares/isolation');
 
+const prisma = new PrismaClient();
 const router = express.Router();
 
-// Get all contracts (global)
+// Enforce auth and isolation
+router.use(authMiddleware());
+router.use(isolationMiddleware);
+
+// Get all contracts for the user
 router.get('/all', async (req, res) => {
   try {
     const contracts = await prisma.contract.findMany({
+      where: { userId: req.user.userId },
       orderBy: { startDate: 'desc' }
     });
     res.json(contracts);
@@ -21,48 +28,27 @@ router.get('/:entityId', async (req, res) => {
   try {
     const { entityId } = req.params;
     const parsedId = parseInt(entityId);
-    console.log(`[GET CONTRACTS] Requested EntityId: ${entityId}, Parsed: ${parsedId}`);
     
     if (isNaN(parsedId)) {
       return res.status(400).json({ error: "Invalid entity ID" });
     }
 
-    // Best Practice: Check if the center exists first
-    const entity = await prisma.financialEntity.findUnique({ where: { id: parsedId } });
+    // Verify entity ownership
+    const entity = await prisma.financialEntity.findFirst({
+      where: { id: parsedId, userId: req.user.userId }
+    });
+
     if (!entity) {
-      return res.status(404).json({ error: "المستند غير موجود: المركز المذكور غير مسجل على الخادم" });
+      return res.status(404).json({ error: "Access denied or entity not found" });
     }
 
     const contracts = await prisma.contract.findMany({
-      where: { financialEntityId: parsedId },
+      where: { financialEntityId: parsedId, userId: req.user.userId },
       orderBy: { startDate: 'desc' }
     });
-    console.log(`[GET CONTRACTS] Found ${contracts.length} contracts for Entity ${parsedId}`);
     res.json(contracts);
   } catch (error) {
-    console.error("[GET CONTRACTS ERROR]", error);
-    res.status(500).json({ error: "Failed to fetch contracts", details: error.message });
-  }
-});
-
-// Get active contract for a specific financial entity
-router.get('/:entityId/active', async (req, res) => {
-  try {
-    const { entityId } = req.params;
-    const parsedId = parseInt(entityId);
-    if (isNaN(parsedId)) return res.status(400).json({ error: "Invalid entity ID" });
-
-    const activeContract = await prisma.contract.findFirst({
-      where: { financialEntityId: parsedId, isActive: true }
-    });
-    
-    if (!activeContract) {
-      return res.status(404).json({ error: "No active contract found" });
-    }
-    
-    res.json(activeContract);
-  } catch (error) {
-    res.status(500).json({ error: "Failed to fetch active contract" });
+    res.status(500).json({ error: "Failed to fetch contracts" });
   }
 });
 
@@ -71,17 +57,18 @@ router.post('/', async (req, res) => {
   try {
     const { financialEntityId, tenantName, startDate, endDate, monthlyRent, clientGuid } = req.body;
     const parsedId = parseInt(financialEntityId);
-    console.log(`[CREATE CONTRACT] EntityId: ${financialEntityId} (${parsedId}), Tenant: ${tenantName}`);
     
     if (isNaN(parsedId)) {
       return res.status(400).json({ error: "Invalid financial entity ID" });
     }
 
-    // Check if the entity actually exists on the backend
-    const entityExists = await prisma.financialEntity.findUnique({ where: { id: parsedId } });
+    // Verify entity ownership
+    const entityExists = await prisma.financialEntity.findFirst({
+      where: { id: parsedId, userId: req.user.userId }
+    });
+
     if (!entityExists) {
-      console.log(`[CREATE CONTRACT] Entity ${parsedId} not found on server`);
-      return res.status(404).json({ error: "هذا المركز غير موجود على الخادم حالياً. يرجى الانتظار للمزامنة أو المحاولة لاحقاً." });
+      return res.status(404).json({ error: "Access denied or entity not found" });
     }
 
     const start = new Date(startDate);
@@ -91,47 +78,29 @@ router.post('/', async (req, res) => {
       return res.status(400).json({ error: "End date must be after start date" });
     }
 
-    // Deactivate current active, create/upsert new
     const result = await prisma.$transaction(async (tx) => {
-      // If we're creating a NEW contract (no existing Guid), we deactivate old ones.
-      // If it's an update of an existing Guid, we don't necessarily want to toggle everything unless it's a real new contract.
-      // But for simplicity, we keep the deactivation logic for the first time it hits the server.
-      
-      const existing = clientGuid ? await tx.contract.findUnique({ where: { clientGuid } }) : null;
-      
-      if (!existing) {
-        await tx.contract.updateMany({
-          where: { financialEntityId: parsedId, isActive: true },
-          data: { isActive: false }
-        });
-      }
+      // Deactivate old active contracts for this entity
+      await tx.contract.updateMany({
+        where: { financialEntityId: parsedId, userId: req.user.userId, isActive: true },
+        data: { isActive: false }
+      });
 
-      return await tx.contract.upsert({
-        where: { clientGuid: clientGuid || 'no-guid-con-' + Date.now() },
-        update: {
-          financialEntityId: parsedId,
-          tenantName,
-          startDate: start,
-          endDate: end,
-          monthlyRent: parseFloat(monthlyRent) || 0,
-          isActive: true
-        },
-        create: {
+      return await tx.contract.create({
+        data: {
           financialEntityId: parsedId,
           tenantName,
           startDate: start,
           endDate: end,
           monthlyRent: parseFloat(monthlyRent) || 0,
           isActive: true,
-          clientGuid
+          clientGuid,
+          userId: req.user.userId
         }
       });
     });
 
-    console.log(`[CREATE CONTRACT] Successfully created contract ${result.id} for Entity ${parsedId}`);
     res.status(201).json(result);
   } catch (error) {
-    console.error("[CONTRACT ERROR]", error);
     res.status(500).json({ error: "Failed to create contract", details: error.message });
   }
 });
@@ -140,6 +109,14 @@ router.post('/', async (req, res) => {
 router.put('/:id/deactivate', async (req, res) => {
   try {
     const { id } = req.params;
+    
+    // Verify ownership
+    const existing = await prisma.contract.findFirst({
+      where: { id: parseInt(id), userId: req.user.userId }
+    });
+
+    if (!existing) return res.status(404).json({ error: "Access denied or contract not found" });
+
     const contract = await prisma.contract.update({
       where: { id: parseInt(id) },
       data: { isActive: false }

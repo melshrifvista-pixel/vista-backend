@@ -1,17 +1,20 @@
 const express = require('express');
 const { PrismaClient } = require('@prisma/client');
 const authMiddleware = require('../middlewares/auth');
+const isolationMiddleware = require('../middlewares/isolation');
 
 const router = express.Router();
 const prisma = new PrismaClient();
 
-// Auth disabled for direct mode
-// router.use(authMiddleware(['ADMIN', 'ACCOUNTANT', 'VIEWER']));
+// Enforce auth and isolation
+router.use(authMiddleware());
+router.use(isolationMiddleware);
 
 // Get all transactions
 router.get('/', async (req, res, next) => {
   try {
     const transactions = await prisma.transaction.findMany({
+      where: { userId: req.user.userId },
       include: { entity: true },
       orderBy: { timestamp: 'desc' }
     });
@@ -25,8 +28,15 @@ router.get('/', async (req, res, next) => {
 router.get('/entity/:entityId', async (req, res, next) => {
   try {
     const { entityId } = req.params;
+    // Verify entity ownership first
+    const entity = await prisma.financialEntity.findFirst({
+      where: { id: parseInt(entityId), userId: req.user.userId }
+    });
+
+    if (!entity) return res.status(404).json({ error: 'Entity not found or access denied' });
+
     const transactions = await prisma.transaction.findMany({
-      where: { entityId: parseInt(entityId) },
+      where: { entityId: parseInt(entityId), userId: req.user.userId },
       orderBy: { timestamp: 'desc' }
     });
     res.json(transactions);
@@ -44,19 +54,15 @@ router.post('/', async (req, res, next) => {
       return res.status(400).json({ error: 'Amount, type, and entityId are required' });
     }
 
-    const transaction = await prisma.transaction.upsert({
-      where: { clientGuid: clientGuid || 'no-guid-' + Date.now() },
-      update: {
-        amount: parseFloat(amount),
-        type,
-        entityId: parseInt(entityId),
-        notes,
-        personName,
-        isCashReturn: isCashReturn !== undefined ? isCashReturn : true,
-        receiptImagePath,
-        timestamp: timestamp ? new Date(timestamp) : new Date()
-      },
-      create: {
+    // Verify entity ownership
+    const entity = await prisma.financialEntity.findFirst({
+      where: { id: parseInt(entityId), userId: req.user.userId }
+    });
+
+    if (!entity) return res.status(404).json({ error: 'Entity not found or access denied' });
+
+    const transaction = await prisma.transaction.create({
+      data: {
         amount: parseFloat(amount),
         type,
         entityId: parseInt(entityId),
@@ -65,12 +71,13 @@ router.post('/', async (req, res, next) => {
         isCashReturn: isCashReturn !== undefined ? isCashReturn : true,
         receiptImagePath,
         timestamp: timestamp ? new Date(timestamp) : new Date(),
-        clientGuid
+        clientGuid,
+        userId: req.user.userId
       }
     });
 
     res.status(201).json(transaction);
-    req.io.emit('sync_data', { type: 'transactions', entityId });
+    req.io.emit('sync_data', { type: 'transactions', entityId, userId: req.user.userId });
   } catch (err) {
     next(err);
   }
@@ -80,28 +87,35 @@ router.post('/', async (req, res, next) => {
 router.delete('/:id', async (req, res, next) => {
   try {
     const { id } = req.params;
+
+    // Verify ownership
+    const existing = await prisma.transaction.findFirst({
+      where: { id: parseInt(id), userId: req.user.userId }
+    });
+
+    if (!existing) return res.status(404).json({ error: 'Transaction not found or access denied' });
+
     await prisma.transaction.delete({
       where: { id: parseInt(id) }
     });
     res.json({ message: 'Transaction deleted successfully' });
-    req.io.emit('sync_data', { type: 'transactions' });
+    req.io.emit('sync_data', { type: 'transactions', userId: req.user.userId });
   } catch (err) {
     next(err);
   }
 });
 
-// Get Balance Summary (Net balance and Custody balances)
+// Get Balance Summary
 router.get('/summary', async (req, res, next) => {
   try {
-    // This could be optimized into a single query, but for simplicity we fetch all and calculate
     const entities = await prisma.financialEntity.findMany({
+      where: { userId: req.user.userId },
       include: { transactions: true }
     });
 
     let revenuesIn = 0, revenuesOut = 0;
     let expensesIn = 0, expensesOut = 0;
     let netCustodyDebtTotal = 0;
-
     const custodyBalances = [];
 
     for (const entity of entities) {
@@ -121,7 +135,6 @@ router.get('/summary', async (req, res, next) => {
           name: entity.name,
           balance: entity.initialBalance + inTotal - outTotal
         });
-        // For net balance, custody is a liability (IN - OUT_Return)
         netCustodyDebtTotal += (inTotal - outReturnTotal);
       }
     }

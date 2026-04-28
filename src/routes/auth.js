@@ -1,136 +1,120 @@
 const express = require('express');
 const bcrypt = require('bcryptjs');
-const jwt = require('jsonwebtoken');
-const crypto = require('crypto');
 const { PrismaClient } = require('@prisma/client');
 const authMiddleware = require('../middlewares/auth');
 const sendEmail = require('../utils/email');
-const rateLimit = require('express-rate-limit');
+const { authLimiter } = require('../middlewares/rateLimiter');
+const { generateOTP, hashOTP, verifyOTP } = require('../utils/otp');
+const { generateTokens, rotateRefreshToken, revokeSession } = require('../utils/session');
+const logAudit = require('../utils/audit');
+const crypto = require('crypto');
 
 const router = express.Router();
 const prisma = new PrismaClient();
 
-// Rate limiting for auth endpoints
-// Rate limiting removed for debugging registration issues
-const authLimiter = (req, res, next) => next();
-
 // Register a new user
 router.post('/register', authLimiter, async (req, res, next) => {
-  console.log(`[AUTH] Register attempt for: ${req.body.username}`);
   try {
     const { username, password, fullName, email } = req.body;
 
-    if (!username || !password || !fullName) {
-      return res.status(400).json({ error: 'Username, password, and full name are required' });
+    // Validation
+    if (!username || !password || !fullName || !email) {
+      return res.status(400).json({ error: 'All fields are required' });
     }
 
-    // Validate email format
-    if (email) {
-      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-      if (!emailRegex.test(email)) {
-        return res.status(400).json({ error: 'Invalid email format' });
-      }
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+      return res.status(400).json({ error: 'Invalid email format' });
     }
 
-    const existingUser = await prisma.user.findFirst({ 
-      where: { 
-        OR: [{ username }, { email }]
-      } 
+    const existingUser = await prisma.user.findFirst({
+      where: { OR: [{ username }, { email }] }
     });
-    
+
     if (existingUser) {
       return res.status(400).json({ error: 'Username or Email already exists' });
     }
 
-    const hashedPassword = await bcrypt.hash(password, 10);
+    const hashedPassword = await bcrypt.hash(password, 12);
     
-    // Generate verification token
-    const verificationToken = crypto.randomBytes(32).toString('hex');
-    const verificationTokenExpiry = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours
-
     const user = await prisma.user.create({
       data: {
         username,
-        email: email || `${username}@vista.local`,
-        password: hashedPassword,
+        email,
+        passwordHash: hashedPassword,
         fullName,
-        role: 'ADMIN',
-        isVerified: true
+        isVerified: false
       }
     });
 
-    res.status(201).json({ 
-      message: 'تم إنشاء الحساب بنجاح. يمكنك الآن تسجيل الدخول مباشرة.'
-    });
-  } catch (err) {
-    next(err);
-  }
-});
-
-// Verify email with token
-router.get('/verify', async (req, res, next) => {
-  try {
-    const { token } = req.query;
-
-    if (!token) {
-      return res.status(400).send('<h1>خطأ</h1><p>الرابط غير صالح.</p>');
-    }
-
-    const user = await prisma.user.findUnique({
-      where: { verificationToken: token }
-    });
-
-    if (!user || user.verificationTokenExpiry < new Date()) {
-      return res.status(400).send('<h1>خطأ في التفعيل</h1><p>الرابط غير صالح أو منتهي الصلاحية.</p>');
-    }
-
-    await prisma.user.update({
-      where: { id: user.id },
-      data: { 
-        isVerified: true,
-        verificationToken: null,
-        verificationTokenExpiry: null
+    // Generate and send OTP
+    const otp = generateOTP();
+    const hashedOtp = await hashOTP(otp);
+    await prisma.oTP.create({
+      data: {
+        userId: user.id,
+        otpHash: hashedOtp,
+        expiresAt: new Date(Date.now() + 5 * 60 * 1000) // 5 minutes
       }
     });
 
-    res.send('<h1>تم تفعيل الحساب بنجاح!</h1><p>يمكنك الآن تسجيل الدخول من التطبيق.</p>');
-  } catch (err) {
-    next(err);
-  }
-});
-
-// Resend verification email
-router.post('/resend-verification', authLimiter, async (req, res, next) => {
-  try {
-    const { email } = req.body;
-
-    const user = await prisma.user.findUnique({ where: { email } });
-
-    if (!user) {
-      return res.status(404).json({ error: 'User not found' });
-    }
-
-    if (user.isVerified) {
-      return res.status(400).json({ error: 'Account is already verified' });
-    }
-
-    const verificationToken = crypto.randomBytes(32).toString('hex');
-    const verificationTokenExpiry = new Date(Date.now() + 24 * 60 * 60 * 1000);
-
-    await prisma.user.update({
-      where: { id: user.id },
-      data: { verificationToken, verificationTokenExpiry }
-    });
-
-    const verificationUrl = `${req.protocol}://${req.get('host')}/api/auth/verify?token=${verificationToken}`;
-    
     await sendEmail({
       to: email,
-      subject: 'VISTA - إعادة إرسال تفعيل الحساب',
-      text: `رابط التفعيل الجديد: ${verificationUrl}`
+      subject: 'VISTA - Verify Your Account',
+      text: `Your verification code is: ${otp}. It expires in 5 minutes.`,
+      html: `<h1>Welcome to VISTA</h1><p>Your verification code is: <strong>${otp}</strong></p><p>It expires in 5 minutes.</p>`
     });
 
-    res.json({ message: 'تم إعادة إرسال رابط التفعيل بنجاح' });
+    await logAudit(user.id, 'USER_REGISTERED', { email }, req);
+
+    res.status(201).json({
+      message: 'Registration successful. Please check your email for the verification code.'
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Verify OTP
+router.post('/verify-otp', authLimiter, async (req, res, next) => {
+  try {
+    const { email, otp } = req.body;
+
+    const user = await prisma.user.findUnique({ where: { email } });
+    if (!user) return res.status(404).json({ error: 'User not found' });
+
+    const otpRecord = await prisma.oTP.findFirst({
+      where: { userId: user.id },
+      orderBy: { createdAt: 'desc' }
+    });
+
+    if (!otpRecord || otpRecord.expiresAt < new Date()) {
+      return res.status(400).json({ error: 'OTP expired or not found' });
+    }
+
+    if (otpRecord.attempts >= 3) {
+      return res.status(400).json({ error: 'Too many failed attempts. Please resend OTP.' });
+    }
+
+    const isMatch = await verifyOTP(otp, otpRecord.otpHash);
+    if (!isMatch) {
+      await prisma.oTP.update({
+        where: { id: otpRecord.id },
+        data: { attempts: { increment: 1 } }
+      });
+      return res.status(400).json({ error: 'Invalid OTP' });
+    }
+
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { isVerified: true }
+    });
+
+    await prisma.oTP.deleteMany({ where: { userId: user.id } });
+
+    await logAudit(user.id, 'EMAIL_VERIFIED', {}, req);
+
+    res.json({ message: 'Account verified successfully. You can now log in.' });
   } catch (err) {
     next(err);
   }
@@ -141,45 +125,110 @@ router.post('/login', authLimiter, async (req, res, next) => {
   try {
     const { username, password } = req.body;
 
-    if (!username || !password) {
-      return res.status(400).json({ error: 'Username and password are required' });
-    }
-
     const user = await prisma.user.findUnique({ where: { username } });
     if (!user) {
-      return res.status(401).json({ error: 'بيانات الدخول غير صحيحة' });
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
+
+    // Account Lock Check
+    if (user.isLocked && user.lockUntil > new Date()) {
+      return res.status(403).json({ 
+        error: 'Account locked', 
+        message: `Too many failed attempts. Try again after ${user.lockUntil.toISOString()}` 
+      });
     }
 
     if (!user.isVerified) {
-      return res.status(403).json({ error: 'يرجى تفعيل الحساب من البريد الإلكتروني أولاً' });
+      return res.status(403).json({ error: 'Account not verified. Please verify your email.' });
     }
 
-    const isValidPassword = await bcrypt.compare(password, user.password);
-    if (!isValidPassword) {
-      return res.status(401).json({ error: 'بيانات الدخول غير صحيحة' });
+    const isMatch = await bcrypt.compare(password, user.passwordHash);
+    if (!isMatch) {
+      const attempts = user.failedLoginAttempts + 1;
+      const isLocked = attempts >= 5;
+      const lockUntil = isLocked ? new Date(Date.now() + 15 * 60 * 1000) : null;
+
+      await prisma.user.update({
+        where: { id: user.id },
+        data: { 
+          failedLoginAttempts: attempts,
+          isLocked,
+          lockUntil
+        }
+      });
+
+      await logAudit(user.id, 'LOGIN_FAILED', { attempts }, req);
+      return res.status(401).json({ error: 'Invalid credentials' });
     }
 
-    const token = jwt.sign(
-      { userId: user.id, username: user.username, role: user.role },
-      process.env.JWT_SECRET || 'supersecretkey_vista_2026',
-      { expiresIn: '24h' }
-    );
+    // Reset failed attempts on success
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { failedLoginAttempts: 0, isLocked: false, lockUntil: null }
+    });
 
-    res.json({ 
-      token, 
+    const tokens = await generateTokens(user, req);
+
+    await logAudit(user.id, 'LOGIN_SUCCESS', { sessionId: tokens.sessionId }, req);
+
+    res.json({
       user: {
         id: user.id,
         username: user.username,
         fullName: user.fullName,
         role: user.role
-      }
+      },
+      ...tokens
     });
   } catch (err) {
     next(err);
   }
 });
 
-// Get current user profile
+// Refresh Token
+router.post('/refresh', async (req, res, next) => {
+  try {
+    const { refreshToken, sessionId } = req.body;
+    if (!refreshToken || !sessionId) return res.status(400).json({ error: 'Refresh token and session ID required' });
+
+    const session = await prisma.session.findUnique({ 
+      where: { id: sessionId },
+      include: { user: true }
+    });
+
+    if (!session || !session.isValid || session.expiresAt < new Date()) {
+      return res.status(401).json({ error: 'Invalid or expired session' });
+    }
+
+    const isMatch = await bcrypt.compare(refreshToken, session.refreshTokenHash);
+    if (!isMatch) {
+      await revokeSession(sessionId); // Security risk: revoke session if token doesn't match hash
+      return res.status(401).json({ error: 'Invalid refresh token' });
+    }
+
+    const tokens = await rotateRefreshToken(refreshToken, sessionId, session.user, req);
+
+    res.json(tokens);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Logout
+router.post('/logout', authMiddleware(), async (req, res, next) => {
+  try {
+    const { sessionId } = req.body;
+    if (sessionId) {
+      await revokeSession(sessionId);
+      await logAudit(req.user.userId, 'LOGOUT', { sessionId }, req);
+    }
+    res.json({ message: 'Logged out successfully' });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Profile
 router.get('/me', authMiddleware(), async (req, res, next) => {
   try {
     const user = await prisma.user.findUnique({
@@ -194,15 +243,148 @@ router.get('/me', authMiddleware(), async (req, res, next) => {
         createdAt: true
       }
     });
-
-    if (!user) {
-      return res.status(404).json({ error: 'User not found' });
-    }
-
     res.json(user);
   } catch (err) {
     next(err);
   }
 });
 
+// Forgot Password
+router.post('/forgot-password', authLimiter, async (req, res, next) => {
+  try {
+    const { email } = req.body;
+    const user = await prisma.user.findUnique({ where: { email } });
+    
+    // We don't want to leak if a user exists or not
+    if (!user) {
+      return res.json({ message: 'If an account with that email exists, we have sent a reset link.' });
+    }
+
+    const resetToken = crypto.randomBytes(32).toString('hex');
+    const hashedToken = await bcrypt.hash(resetToken, 10);
+    const expiresAt = new Date(Date.now() + 1 * 60 * 60 * 1000); // 1 hour
+
+    await prisma.oTP.create({
+      data: {
+        userId: user.id,
+        otpHash: hashedToken,
+        expiresAt,
+        attempts: 0
+      }
+    });
+
+    await sendEmail({
+      to: email,
+      subject: 'VISTA - Password Reset',
+      text: `Your password reset code is: ${resetToken}. It expires in 1 hour.`,
+      html: `<p>Your password reset code is: <strong>${resetToken}</strong></p>`
+    });
+
+    await logAudit(user.id, 'PASSWORD_RESET_REQUESTED', { email }, req);
+
+    res.json({ message: 'If an account with that email exists, we have sent a reset link.' });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Reset Password
+router.post('/reset-password', authLimiter, async (req, res, next) => {
+  try {
+    const { email, token, newPassword } = req.body;
+
+    const user = await prisma.user.findUnique({ where: { email } });
+    if (!user) return res.status(400).json({ error: 'Invalid request' });
+
+    const resetRecord = await prisma.oTP.findFirst({
+      where: { userId: user.id },
+      orderBy: { createdAt: 'desc' }
+    });
+
+    if (!resetRecord || resetRecord.expiresAt < new Date()) {
+      return res.status(400).json({ error: 'Token expired or invalid' });
+    }
+
+    const isMatch = await bcrypt.compare(token, resetRecord.otpHash);
+    if (!isMatch) return res.status(400).json({ error: 'Invalid token' });
+
+    const hashedPassword = await bcrypt.hash(newPassword, 12);
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { passwordHash: hashedPassword, failedLoginAttempts: 0, isLocked: false }
+    });
+
+    await prisma.oTP.deleteMany({ where: { userId: user.id } });
+
+    await logAudit(user.id, 'PASSWORD_RESET_SUCCESS', {}, req);
+
+    res.json({ message: 'Password reset successfully. You can now log in.' });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Social Login (Google/Apple) - Logic Placeholder
+router.post('/social-login', authLimiter, async (req, res, next) => {
+  try {
+    const { provider, idToken } = req.body;
+    
+    // In a real implementation, we would validate the idToken with Google/Apple SDK
+    // For this example, we'll assume the token is valid and contains email/name
+    let socialEmail, socialName;
+    
+    if (provider === 'google') {
+      // Validate Google Token...
+      socialEmail = 'user@gmail.com'; 
+      socialName = 'Google User';
+    } else if (provider === 'apple') {
+      // Validate Apple Token...
+      socialEmail = 'user@apple.com';
+      socialName = 'Apple User';
+    } else {
+      return res.status(400).json({ error: 'Unsupported provider' });
+    }
+
+    // Secure Linking Strategy
+    let user = await prisma.user.findUnique({ where: { email: socialEmail } });
+
+    if (user) {
+      // If user exists but is not verified, verify them since social auth verified the email
+      if (!user.isVerified) {
+        await prisma.user.update({
+          where: { id: user.id },
+          data: { isVerified: true }
+        });
+      }
+    } else {
+      // Create new user for social login
+      user = await prisma.user.create({
+        data: {
+          username: `${provider}_${socialEmail.split('@')[0]}`,
+          email: socialEmail,
+          fullName: socialName,
+          passwordHash: 'SOCIAL_AUTH_ONLY', // No password login for social users unless they reset it
+          isVerified: true
+        }
+      });
+    }
+
+    const tokens = await generateTokens(user, req);
+    await logAudit(user.id, 'SOCIAL_LOGIN_SUCCESS', { provider }, req);
+
+    res.json({
+      user: {
+        id: user.id,
+        username: user.username,
+        fullName: user.fullName,
+        role: user.role
+      },
+      ...tokens
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
 module.exports = router;
+

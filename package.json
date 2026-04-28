@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "nodemon src/index.js",
-    "migrate": "npx prisma migrate dev --name init"
+    "migrate": "npx prisma migrate dev --name init",
+    "postinstall": "prisma generate"
   },
   "dependencies": {
     "@prisma/client": "^5.12.1",
