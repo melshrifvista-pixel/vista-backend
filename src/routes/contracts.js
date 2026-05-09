@@ -127,4 +127,25 @@ router.put('/:id/deactivate', async (req, res) => {
   }
 });
 
+// Delete a contract
+router.delete('/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    // Verify ownership
+    const existing = await prisma.contract.findFirst({
+      where: { id: parseInt(id), userId: req.user.userId }
+    });
+
+    if (!existing) return res.status(404).json({ error: "Access denied or contract not found" });
+
+    await prisma.contract.delete({
+      where: { id: parseInt(id) }
+    });
+    res.json({ success: true, message: "Contract deleted successfully" });
+  } catch (error) {
+    res.status(500).json({ error: "Failed to delete contract", details: error.message });
+  }
+});
+
 module.exports = router;

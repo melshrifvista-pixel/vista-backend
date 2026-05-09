@@ -76,6 +76,7 @@ enum EntityType {
   REVENUE
   EXPENSE
   CUSTODY
+  SALARY
 }
 
 model FinancialEntity {

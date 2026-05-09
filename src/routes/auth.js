@@ -15,7 +15,12 @@ const prisma = new PrismaClient();
 // Register a new user
 router.post('/register', authLimiter, async (req, res, next) => {
   try {
-    const { username, password, fullName, email } = req.body;
+    let { username, password, fullName, email } = req.body;
+    
+    // Normalize and trim
+    username = username?.trim().toLowerCase();
+    email = email?.trim().toLowerCase();
+    fullName = fullName?.trim();
 
     // Validation
     if (!username || !password || !fullName || !email) {
@@ -78,7 +83,9 @@ router.post('/register', authLimiter, async (req, res, next) => {
 // Verify OTP
 router.post('/verify-otp', authLimiter, async (req, res, next) => {
   try {
-    const { email, otp } = req.body;
+    let { email, otp } = req.body;
+    email = email?.trim().toLowerCase();
+    otp = otp?.trim();
 
     const user = await prisma.user.findUnique({ where: { email } });
     if (!user) return res.status(404).json({ error: 'User not found' });
@@ -123,7 +130,8 @@ router.post('/verify-otp', authLimiter, async (req, res, next) => {
 // Resend Verification OTP
 router.post('/resend-verification', authLimiter, async (req, res, next) => {
   try {
-    const { email } = req.body;
+    let { email } = req.body;
+    email = email?.trim().toLowerCase();
     if (!email) return res.status(400).json({ error: 'Email is required' });
 
     const user = await prisma.user.findUnique({ where: { email } });
@@ -162,7 +170,8 @@ router.post('/resend-verification', authLimiter, async (req, res, next) => {
 // Login
 router.post('/login', authLimiter, async (req, res, next) => {
   try {
-    const { username, password } = req.body;
+    let { username, password } = req.body;
+    username = username?.trim().toLowerCase();
 
     const user = await prisma.user.findUnique({ where: { username } });
     if (!user) {
@@ -356,7 +365,8 @@ router.post('/social-login', authLimiter, async (req, res, next) => {
 // Step 1: User submits their email → send OTP
 router.post('/forgot-password', authLimiter, async (req, res, next) => {
   try {
-    const { email } = req.body;
+    let { email } = req.body;
+    email = email?.trim().toLowerCase();
 
     if (!email) {
       return res.status(400).json({ error: 'Email is required' });
@@ -413,7 +423,9 @@ router.post('/forgot-password', authLimiter, async (req, res, next) => {
 // Step 2: User submits email + OTP + new password
 router.post('/reset-password', authLimiter, async (req, res, next) => {
   try {
-    const { email, otp, newPassword } = req.body;
+    let { email, otp, newPassword } = req.body;
+    email = email?.trim().toLowerCase();
+    otp = otp?.trim();
 
     if (!email || !otp || !newPassword) {
       return res.status(400).json({ error: 'Email, OTP, and new password are required' });
@@ -489,6 +501,49 @@ router.post('/reset-password', authLimiter, async (req, res, next) => {
     });
 
     res.json({ message: 'Password reset successfully. You can now log in with your new password.' });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ─── Forgot Username ─────────────────────────────────────────────────────────
+router.post('/forgot-username', authLimiter, async (req, res, next) => {
+  try {
+    let { email } = req.body;
+    email = email?.trim().toLowerCase();
+
+    if (!email) {
+      return res.status(400).json({ error: 'Email is required' });
+    }
+
+    const user = await prisma.user.findUnique({ where: { email } });
+
+    // Always return success to avoid email enumeration
+    if (!user) {
+      return res.json({ message: 'If this email is registered, your username has been sent.' });
+    }
+
+    await sendEmail({
+      to: email,
+      subject: 'VISTA - Your Username',
+      text: `Your VISTA username is: ${user.username}`,
+      html: `
+        <div style="font-family: Arial, sans-serif; max-width: 500px; margin: auto; padding: 24px; border: 1px solid #e0e0e0; border-radius: 8px;">
+          <h2 style="color: #1a73e8;">VISTA Financial System</h2>
+          <p>Hello ${user.fullName},</p>
+          <p>You requested to retrieve your username. Your VISTA username is:</p>
+          <div style="font-size: 24px; font-weight: bold; color: #1a73e8; text-align: center; padding: 16px; background: #f0f4ff; border-radius: 8px; margin: 16px 0;">
+            ${user.username}
+          </div>
+          <p style="color: #666;">You can use this username to log in to your account.</p>
+          <p style="color: #999; font-size: 12px;">If you did not request this, please ignore this email.</p>
+        </div>
+      `
+    });
+
+    await logAudit(user.id, 'FORGOT_USERNAME_REQUESTED', { email }, req);
+
+    res.json({ message: 'If this email is registered, your username has been sent.' });
   } catch (err) {
     next(err);
   }
